@@ -68,8 +68,8 @@ def generate_instrument_definitions(num_instruments: int, val_date_param: date) 
                     "call_dates": call_dates_list,
                     "call_prices": [100.0 + len(call_dates_list) - j for j in range(len(call_dates_list))] if call_dates_list else []
                 },
-                "pricer_params": {"g2_params": (0.01, 0.003, 0.015, 0.006, -0.75), "g2_grid_steps": 8},
-                "tff_config": {"n_train":64, "n_test": 4, "seed": i}
+                "pricer_params": {"g2_params": (0.01, 0.003, 0.015, 0.006, -0.75), "g2_grid_steps": 16},
+                "tff_config": {"n_train":128, "n_test": 4, "seed": i, "order": 3}
             })
 
         elif instrument_type_choice == 2: # European Option
@@ -287,7 +287,7 @@ if __name__ == "__main__":
         print(f"QuantLib version: {ql.__version__}")
         start_time = time.time()
         run_calibration_demo(
-            num_instruments_to_generate=100, # As per user request
+            num_instruments_to_generate=10, # As per user request
             num_workers=24,
             batch_size=32,
             random_seed=42 # For reproducibility

@@ -3,6 +3,9 @@ Contains classes and functions for Tensor Functional Form (TFF) approximation.
 TensorFunctionalFormCalibrate.__init__ is simplified.
 Worker function (_price_one_scenario_for_tff) now handles MBSPoolStatic.
 """
+# Add this import at the top of the file
+from sklearn.linear_model import Lasso
+from sklearn.preprocessing import StandardScaler
 import numpy as np
 from scipy.stats.qmc import LatinHypercube, Sobol, scale
 from concurrent.futures import ProcessPoolExecutor
@@ -51,25 +54,106 @@ def _parse_numeric_pillars_from_factor_names(factor_names: list[str]) -> np.ndar
 
 
 class TensorFunctionalForm:
-    def __init__(self, A: np.ndarray, b: np.ndarray, c: float):
-        self.A, self.b, self.c = np.asarray(A,float), np.asarray(b,float), float(c)
-        if self.A.ndim!=2 or self.A.shape[0]!=self.A.shape[1]: raise ValueError("A must be square.")
-        if self.b.ndim!=1 or self.b.shape[0]!=self.A.shape[0]: raise ValueError("b dim must match A.")
-        self.D: int = self.A.shape[0]
+    def __init__(self, A: np.ndarray, b: np.ndarray, c: float, d : np.ndarray = None, order: int = 2):
+        self.A, self.b, self.c = np.asarray(A, float), np.asarray(b, float), float(c)
+        self.order = int(order)
+        
+        if self.A.ndim != 2 or self.A.shape[0] != self.A.shape[1]: 
+            raise ValueError("A must be square.")
+        if self.b.ndim != 1 or self.b.shape[0] != self.A.shape[0]: 
+            raise ValueError("b dim must match A.")
+        
+        self.Dim: int = self.A.shape[0]
+        
+        # Handle higher-order terms
+        if self.order > 2:
+            if d is None:
+                self.d = np.zeros((self.order - 2, self.Dim))  # (order-2) x Dim matrix for cubic and higher terms
+            else:
+                self.d = np.asarray(d, float)
+                expected_shape = (self.order - 2, self.Dim)
+                if self.d.shape != expected_shape:
+                    raise ValueError(f"d must have shape {expected_shape} for order {self.order}, got {self.d.shape}")
+        else:
+            self.d = None
+    
     def __call__(self, x: np.ndarray) -> np.ndarray:
         x_arr = np.asarray(x)
+        
         if x_arr.ndim == 1:
-            if x_arr.shape[0]!=self.D: raise ValueError(f"Input dim {x_arr.shape[0]} != model dim {self.D}.")
-            return float(x_arr @ self.A @ x_arr + self.b @ x_arr + self.c)
+            if x_arr.shape[0] != self.Dim:
+                raise ValueError(f"Input dim {x_arr.shape[0]} != model dim {self.Dim}.")
+
+            # Quadratic term: x^T A x
+            quadratic = float(x_arr @ self.A @ x_arr)
+            # Linear term: b^T x
+            linear = float(self.b @ x_arr)
+            # Constant term
+            result = quadratic + linear + self.c
+            
+            # Higher-order terms: d[k-3, i] * x[i]^k for k >= 3
+            if self.order > 2 and self.d is not None:
+                for k in range(3, self.order + 1):
+                    d_row = self.d[k - 3, :]  # k=3 uses row 0, k=4 uses row 1, etc.
+                    higher_order_term = float(np.sum(d_row * (x_arr ** k)))
+                    result += higher_order_term
+            
+            return result
+            
         elif x_arr.ndim == 2:
-            if x_arr.shape[1]!=self.D: raise ValueError(f"Input shape {x_arr.shape}, expected (N, {self.D}).")
-            return np.sum((x_arr @ self.A) * x_arr, axis=1) + x_arr @ self.b + self.c
+            if x_arr.shape[1] != self.Dim: 
+                raise ValueError(f"Input shape {x_arr.shape}, expected (N, {self.D}).")
+            
+            N = x_arr.shape[0]
+            
+            # Quadratic terms: sum_i sum_j A[i,j] * x[i] * x[j] for each row
+            quadratic = np.sum((x_arr @ self.A) * x_arr, axis=1)
+            # Linear terms: x @ b
+            linear = x_arr @ self.b
+            # Constant terms
+            result = quadratic + linear + self.c
+            
+            # Higher-order terms
+            if self.order > 2 and self.d is not None:
+                for k in range(3, self.order + 1):
+                    d_row = self.d[k - 3, :]  # Shape: (D,)
+                    # For each sample, compute sum_i d[k-3, i] * x[i]^k
+                    x_pow_k = x_arr ** k  # Shape: (N, D)
+                    higher_order_term = np.sum(d_row[np.newaxis, :] * x_pow_k, axis=1)  # Shape: (N,)
+                    result += higher_order_term
+            
+            return result
+            
         raise ValueError(f"Input must be 1D or 2D, got ndim={x_arr.ndim}")
-    def to_dict(self) -> dict: return {'A':self.A.tolist(),'b':self.b.tolist(),'c':self.c,'D':self.D}
+    
+    def to_dict(self) -> dict:
+        result = {
+            'A': self.A.tolist(),
+            'b': self.b.tolist(), 
+            'c': self.c,
+            'Dim': self.Dim,
+            'order': self.order
+        }
+        if self.d is not None:
+            result['d'] = self.d.tolist()
+        return result
+    
     @classmethod
-    def from_dict(cls, data:dict) -> 'TensorFunctionalForm':
-        if not all(k in data for k in ['A','b','c']): raise ValueError("Missing keys in TFF data dict.")
-        return cls(np.array(data['A'],float), np.array(data['b'],float), data['c'])
+    def from_dict(cls, data: dict) -> 'TensorFunctionalForm':
+        required_keys = ['A', 'b', 'c']
+        if not all(k in data for k in required_keys): 
+            raise ValueError(f"Missing keys in TFF data dict. Required: {required_keys}")
+        
+        order = data.get('order', 2)
+        d = np.array(data['d'], float) if 'd' in data else None
+        
+        return cls(
+            A=np.array(data['A'], float),
+            b=np.array(data['b'], float),
+            c=data['c'],
+            d=d,
+            order=order
+        )
 
 
 def _price_one_scenario_for_tff(worker_args: tuple) -> float:
@@ -236,9 +320,16 @@ class TensorFunctionalFormCalibrate:
         self, full_market_scenarios_for_tff_factors: np.ndarray,
         n_train: int = 64, n_test: int = 8,
         random_seed: int = 0, sampling_method: str = 'sobol', parallel_workers: int = None,
-        option_feature_order: int = 0, **price_kwargs
-    ) -> tuple[TensorFunctionalForm, np.ndarray, np.ndarray, float, dict]:
-
+        option_feature_order: int = 0, order: int = 2, **price_kwargs
+    ) -> tuple[TensorFunctionalForm, np.ndarray, np.ndarray, float, dict, float, float]:
+        """
+        Sample training points and fit TFF model.
+        
+        Args:
+            order: Polynomial order for TFF (2=quadratic, 3=cubic, etc.). Default=2 for backward compatibility.
+            ...other args same as before...
+        """
+        
         rng_np = np.random.default_rng(random_seed)
         num_tff_factors = len(self.tff_input_raw_factor_names)
 
@@ -251,19 +342,13 @@ class TensorFunctionalFormCalibrate:
         train_tff_inputs_raw = None
         if sampling_method in ['sobol', 'uniform']:
             with warnings.catch_warnings():
-                warnings.filterwarnings(
-                    "ignore",
-                    category=UserWarning,
-                    message=".*power of 2.*"
-                )
+                warnings.filterwarnings("ignore", category=UserWarning, message=".*power of 2.*")
                 sampler = Sobol(d=num_tff_factors, scramble=True, seed=random_seed)
-                train_tff_inputs_raw = scale(
-                    sampler.random(n=n_train-1), domain_min, domain_max
-                )
+                train_tff_inputs_raw = scale(sampler.random(n=n_train-1), domain_min, domain_max)
         else:
             raise ValueError(f"Unknown sampling method: {sampling_method}. Available methods are 'sobol' and 'uniform'.")
 
-        # Append the first row of full_market_scenarios_for_tff_factors to ensure base values are included
+        # Append the first row to ensure base values are included
         if self.tff_input_raw_base_values.ndim == 1:
             if self.tff_input_raw_base_values.shape[0] != num_tff_factors:
                 raise ValueError(f"Base values shape {self.tff_input_raw_base_values.shape} does not match factor names length {num_tff_factors}.")
@@ -278,8 +363,10 @@ class TensorFunctionalFormCalibrate:
 
         train_prices = np.array([_price_one_scenario_for_tff(args) for args in worker_args_list])
 
-        if train_prices.ndim == 0 and n_train == 1: train_prices = np.array([train_prices])
-        if train_prices.shape[0] != n_train: raise ValueError(f"Shape of train_prices {train_prices.shape} != n_train {n_train}")
+        if train_prices.ndim == 0 and n_train == 1: 
+            train_prices = np.array([train_prices])
+        if train_prices.shape[0] != n_train: 
+            raise ValueError(f"Shape of train_prices {train_prices.shape} != n_train {n_train}")
 
         # 2) Prepare inputs for fitting
         if self.feature_generation is not None:
@@ -315,33 +402,77 @@ class TensorFunctionalFormCalibrate:
                     'is_engineered': True
                 }
 
-        # 3) build X_train from tff_inputs_for_fitting and fit …
+        # 3) Build design matrix X_train for higher-order polynomial fitting
         D_eff = tff_inputs_for_fitting.shape[1]
-        X_train = np.hstack([np.array([np.outer(s,s).flatten() for s in tff_inputs_for_fitting]), tff_inputs_for_fitting, np.ones((n_train,1))])
-        if np.any(np.isnan(X_train)) or np.any(np.isinf(X_train)): raise ValueError("NaN/Inf in X_train.")
-        if np.any(np.isnan(train_prices)) or np.any(np.isinf(train_prices)): raise ValueError("NaN/Inf in train_prices.")
+        
+        # Start with quadratic terms (vectorized outer product)
+        quadratic_terms = np.array([np.outer(s, s).flatten() for s in tff_inputs_for_fitting])
+        
+        # Add linear terms
+        linear_terms = tff_inputs_for_fitting
+        
+        # Add constant term
+        constant_terms = np.ones((n_train, 1))
+        
+        # Build design matrix starting with order 2 terms
+        X_train = np.hstack([quadratic_terms, linear_terms, constant_terms])
+        
+        # Add higher-order terms if order > 2
+        if order > 2:
+            for k in range(3, order + 1):
+                # Add x^k terms for each dimension
+                higher_order_terms = tff_inputs_for_fitting ** k  # Shape: (n_train, D_eff)
+                X_train = np.hstack([X_train, higher_order_terms])
+        
+        if np.any(np.isnan(X_train)) or np.any(np.isinf(X_train)): 
+            raise ValueError("NaN/Inf in X_train.")
+        if np.any(np.isnan(train_prices)) or np.any(np.isinf(train_prices)): 
+            raise ValueError("NaN/Inf in train_prices.")
 
-        try: coeffs,_,_,_ = np.linalg.lstsq(X_train, train_prices, rcond=None)
-        except np.linalg.LinAlgError as e: raise np.linalg.LinAlgError(f"Lstsq failed: {e}.")
+        try: 
+            coeffs, _, _, _ = np.linalg.lstsq(X_train, train_prices, rcond=None)
+        except np.linalg.LinAlgError as e:
+            raise np.linalg.LinAlgError(f"Lstsq failed: {e}.")
 
-        A_flat = coeffs[:D_eff*D_eff]
-        A_mat = A_flat.reshape(D_eff,D_eff); A_sym = 0.5*(A_mat+A_mat.T)
-        b_vec, c_s = coeffs[D_eff*D_eff : D_eff*D_eff+D_eff], coeffs[-1]
+        # Extract coefficients
+        coeff_idx = 0
+        
+        # Extract A matrix (quadratic terms)
+        A_flat = coeffs[coeff_idx:coeff_idx + D_eff * D_eff]
+        A_mat = A_flat.reshape(D_eff, D_eff)
+        A_sym = 0.5 * (A_mat + A_mat.T)
+        coeff_idx += D_eff * D_eff
+        
+        # Extract b vector (linear terms)
+        b_vec = coeffs[coeff_idx:coeff_idx + D_eff]
+        coeff_idx += D_eff
+        
+        # Extract c scalar (constant term)
+        c_s = coeffs[coeff_idx]
+        coeff_idx += 1
+        
+        # Extract d matrix (higher-order terms) if order > 2
+        d_mat = None
+        if order > 2:
+            num_higher_order_coeffs = (order - 2) * D_eff
+            d_coeffs = coeffs[coeff_idx:coeff_idx + num_higher_order_coeffs]
+            d_mat = d_coeffs.reshape(order - 2, D_eff)
         
         # Create the fitted TensorFunctionalForm instance
-        fitted_tff = TensorFunctionalForm(A_sym, b_vec, c_s)
+        fitted_tff = TensorFunctionalForm(A_sym, b_vec, c_s, d_mat, order)
 
-        # 4) generate test scenarios & true prices …
+        # 4) Generate test scenarios and evaluate
         test_idx = rng_np.choice(full_market_scenarios_for_tff_factors.shape[0], size=n_test-1, replace=False)
         test_idx = np.insert(test_idx, 0, 0)  # Ensure the first scenario is always included
         test_tff_inputs_raw = full_market_scenarios_for_tff_factors[test_idx]
+        
         test_worker_args = [(self.product_static_params_for_worker, self.pricer_config_for_worker,
              self.tff_input_raw_factor_names, test_tff_inputs_raw[i],
              self.valuation_date_for_ql_settings_in_worker.isoformat(), price_kwargs) for i in range(n_test)]
-        #print(f"   Generating {n_test} test prices sequentially...")
+        
         test_true_prices = np.array([_price_one_scenario_for_tff(args) for args in test_worker_args])
 
-        # apply same feature logic to test‐set
+        # Apply same feature logic to test set
         if self.feature_generation is not None:
             feat_vals_test, _ = self.feature_generation.create_features()
             test_inputs_eval, _, _ = normalize_features(
@@ -365,13 +496,16 @@ class TensorFunctionalFormCalibrate:
         test_pred_prices = fitted_tff(test_inputs_eval)
         
         base_value = test_true_prices[0]
-        base_tff_value = fitted_tff(tff_inputs_for_fitting[0]) 
+        base_tff_value = fitted_tff(tff_inputs_for_fitting[0])
         
-        if test_true_prices.ndim==0 and n_test==1: test_true_prices = np.array([test_true_prices])
-        if test_pred_prices.ndim==0 and n_test==1: test_pred_prices = np.array([test_pred_prices])
-        if test_true_prices.shape != test_pred_prices.shape: raise ValueError(f"Shape mismatch test prices: true {test_true_prices.shape}, pred {test_pred_prices.shape}")
+        if test_true_prices.ndim == 0 and n_test == 1: 
+            test_true_prices = np.array([test_true_prices])
+        if test_pred_prices.ndim == 0 and n_test == 1: 
+            test_pred_prices = np.array([test_pred_prices])
+        if test_true_prices.shape != test_pred_prices.shape: 
+            raise ValueError(f"Shape mismatch test prices: true {test_true_prices.shape}, pred {test_pred_prices.shape}")
 
-        
         rmse = np.sqrt(np.mean((test_true_prices - test_pred_prices)**2))
+        
         return fitted_tff, test_tff_inputs_raw, test_true_prices, rmse, normalization_params, base_value, base_tff_value
 

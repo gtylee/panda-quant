@@ -88,9 +88,14 @@ class SimpleRandomScenarioGenerator(ScenarioGeneratorBase):
         # print(f"Warning: Base value for factor '{factor_name}' not found in any specific map.")
         return None
 
-    # Add cache for configured factor names to avoid recomputing
-    #@lru_cache(maxsize=None)
     def generate_scenarios(self, num_scenarios: int, target_factor_names: list[str] = None) -> tuple[np.ndarray, list[str]]:
+        """
+        Generates random scenarios for the specified factors.
+        If target_factor_names is None, generates scenarios for all configured factors.
+        Returns a tuple of (scenarios, factor_names).
+        If target_factor_names is provided, only generates scenarios for those factors.
+        If a factor is not configured, it will raise an error.
+        """
         if target_factor_names is None:
             factors_to_generate = self._configured_factor_names_ordered
         else:

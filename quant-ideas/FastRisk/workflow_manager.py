@@ -635,7 +635,7 @@ class TFFConfigurationFactory:
 
             elif isinstance(product_static, ConvertibleBondStaticBase):
                 pricer_cfg_worker['bond_pricer_config']['method'] = 'convertible_binomial'
-                pricer_cfg_worker['bond_pricer_config']['convertible_engine_steps'] = instrument_pricer_params.get('conv_engine_steps', 128)
+                pricer_cfg_worker['bond_pricer_config']['convertible_engine_steps'] = instrument_pricer_params.get('conv_engine_steps', 128 )
 
                 if not product_static.underlying_symbol: raise ValueError("Convertible needs 'underlying_symbol'.")
                 s0_fn_cb = f"{product_static.currency}_{product_static.underlying_symbol}_S0"
@@ -834,6 +834,7 @@ class InstrumentProcessor:
                     random_seed=instrument_spec.get('seed', 42),
                     parallel_workers=tff_sample_fit_parallel_workers,
                     option_feature_order=tff_inputs["option_feature_order"],
+                    order=tff_config_from_spec.get("order", 2),
                     **tff_inputs["fixed_pricer_params_for_tff_training"]
                 )
                 fit_time = time.time() - s_t
@@ -1672,7 +1673,6 @@ class PortfolioAnalytics:
                     pnl_distribution = portfolio_values_scenarios - client_results['base_value']
                     client_results['pnl_distribution_mean'] = np.mean(pnl_distribution)
                     client_results['pnl_distribution_std_dev'] = np.std(pnl_distribution)
-                    client_results['pnl_distribution'] = pnl_distribution
 
                     vars_calculated = {}
                     for p in var_percentiles:

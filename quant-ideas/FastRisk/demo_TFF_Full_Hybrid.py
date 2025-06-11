@@ -362,11 +362,11 @@ def run_hybrid_var_demo(
         print("-" * len(header))
         
         count = 0
-        max_to_display = 15  # Limit display for readability
+        max_to_display = 5  # Limit display for readability
         
         for instrument_id in sorted(tff_model_registry.keys()):
             if count >= max_to_display:
-                print("... (showing first 15 instruments, use full registry for complete analysis)")
+                print("... (showing first 5 instruments, use full registry for complete analysis)")
                 break
             
             tff_model = tff_model_registry.get(instrument_id, {})
