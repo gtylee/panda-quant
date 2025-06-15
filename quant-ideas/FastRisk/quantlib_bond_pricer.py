@@ -261,3 +261,25 @@ class QuantLibBondPricer(PricerBase):
             market_scenario_data=data,
             **price_kwargs
         )
+
+    def get_required_factor_names(self, rate_pillars: np.ndarray = None) -> list:
+        """
+        Returns the list of required factor names for this bond pricer, given the rate pillars.
+        For convertibles, also includes S0 and possibly other equity-related factors.
+        """
+        if rate_pillars is None:
+            raise ValueError("rate_pillars must be provided to get_required_factor_names for QuantLibBondPricer.")
+        # Standard rate factor names
+        rate_factor_names = [f"{self.product_static.currency}_{self.product_static.index_stub}_{t:.2f}Y" for t in rate_pillars]
+        factor_names = list(rate_factor_names)
+        # For convertibles, add S0 (and optionally others if needed)
+        if self.is_convertible:
+            if not hasattr(self.product_static, 'underlying_symbol'):
+                raise ValueError("Convertible bond static definition must have an underlying symbol for S0 factor.")
+            underlying_symbol = self.product_static.underlying_symbol
+            ccy = self.product_static.currency
+            s0_factor_name = f"{ccy}_{underlying_symbol}_S0"
+            factor_names.append(s0_factor_name)
+            # If you have scenario-driven dividend yield, equity vol, or credit spread, add them here as needed
+            # e.g. factor_names.append(f"{ccy}_{underlying_symbol}_DIVIDEND_YIELD")
+        return factor_names

@@ -35,6 +35,7 @@ from mbs_pricer import MBSPricer
 
 from scenario_generator import SimpleRandomScenarioGenerator
 from prepayment_models import ConstantCPRModel, PSAModel, RefiIncentivePrepaymentModel
+from features_generator import engineer_option_features, normalize_features
 
 from tff_approximator import TensorFunctionalFormCalibrate, _parse_numeric_pillars_from_factor_names  # Ensure Portfolio is imported from the correct module
 
@@ -981,24 +982,36 @@ class PortfolioBuilder:
             final_pricer_kwargs = {}
             if pricer_params_from_spec: final_pricer_kwargs.update(pricer_params_from_spec)
 
-            if final_pricing_method == 'tff':
+            if final_pricing_method in ('tff', 'rbfi'):
                 if not final_direct_tff_config:
-                    if instrument_id in self.model_registry and self.model_registry[instrument_id].get('pricing_method', '').upper() == 'TFF':
+                    if instrument_id in self.model_registry and self.model_registry[instrument_id].get('pricing_method', '').upper() == final_pricing_method.upper():
                         entry = self.model_registry[instrument_id]
-                        if all(k in entry for k in ['tff_model_dict', 'tff_raw_input_names', 'tff_normalization_params']):
-                            final_direct_tff_config = {
-                                'model_dict': entry['tff_model_dict'],
-                                'raw_input_names': entry['tff_raw_input_names'],
-                                'normalization_params': entry['tff_normalization_params'],
-                                'option_feature_order': entry.get('tff_option_feature_order', 0)
-                            }
-                            if 'tff_fixed_pricer_params' in entry:
-                                final_pricer_kwargs.update(entry['tff_fixed_pricer_params'])
+                        if final_pricing_method == 'tff':
+                            model_key = 'tff_model_dict'
+                            raw_names_key = 'tff_raw_input_names'
+                            norm_params_key = 'tff_normalization_params'
+                            opt_order_key = 'tff_option_feature_order'
+                            fixed_pricer_params_key = 'tff_fixed_pricer_params'
                         else:
-                            print(f"  WARNING: TFF data incomplete for '{instrument_id}' in registry. Fallback to FULL.")
+                            model_key = 'rbfi_model_dict'
+                            raw_names_key = 'rbfi_raw_input_names'
+                            norm_params_key = 'rbfi_normalization_params'
+                            opt_order_key = 'rbfi_option_feature_order'
+                            fixed_pricer_params_key = 'rbfi_fixed_pricer_params'
+                        if all(k in entry for k in [model_key, raw_names_key, norm_params_key]):
+                            final_direct_tff_config = {
+                                'model_dict': entry[model_key],
+                                'raw_input_names': entry[raw_names_key],
+                                'normalization_params': entry[norm_params_key],
+                                'option_feature_order': entry.get(opt_order_key, 0)
+                            }
+                            if fixed_pricer_params_key in entry:
+                                final_pricer_kwargs.update(entry[fixed_pricer_params_key])
+                        else:
+                            print(f"  WARNING: {final_pricing_method.upper()} data incomplete for '{instrument_id}' in registry. Fallback to FULL.")
                             final_pricing_method = 'full'
                     else:
-                        print(f"  WARNING: TFF spec for '{instrument_id}' missing direct_tff_config and not found as TFF in registry. Fallback to FULL.")
+                        print(f"  WARNING: {final_pricing_method.upper()} spec for '{instrument_id}' missing direct config and not found as {final_pricing_method.upper()} in registry. Fallback to FULL.")
                         final_pricing_method = 'full'
                 elif isinstance(product_static_object, ConvertibleBondStaticBase) and final_direct_tff_config:
                      final_pricer_kwargs.update(pricer_params_from_spec)
@@ -1067,7 +1080,7 @@ class PortfolioBuilder:
                 portfolio_instance.add_position(
                     instrument_id=instrument_id, product_static=product_static_object,
                     num_holdings=num_holdings, pricing_engine_type=final_pricing_method,
-                    direct_tff_config=final_direct_tff_config if final_pricing_method == 'tff' else None,
+                    direct_tff_config=final_direct_tff_config if final_pricing_method in ('tff', 'rbfi') else None,
                     full_pricer_instance=final_full_pricer_instance if final_pricing_method == 'full' else None,
                     full_pricer_kwargs=final_pricer_kwargs
                 )
@@ -1183,8 +1196,8 @@ class PortfolioAnalytics:
 
     def calculate_base_value(self, portfolio):
         """
-        Compute the portfolio’s base‐value by pricing it on the generator’s
-        “base” scenario (all factors = their base map values).
+        Compute the portfolio's base‐value by pricing it on the generator's
+        "base" scenario (all factors = their base map values).
         """
         try:
             # get a single‐row array of the base factors
@@ -1407,312 +1420,3 @@ def _generate_batch_strips_worker(
             batch_strips[inst_id] = prices_array
     
     return batch_strips, batch_errors
-
-# portfolio.py
-"""
-Contains classes for defining and analyzing portfolios of financial instruments.
-The Portfolio class allows pricing using either TFF models (retrieved from a cache)
-or full pricers.
-"""
-import numpy as np
-import abc
-# Import custom classes for product definitions and pricers
-from features_generator import engineer_option_features, normalize_features
-from mbs_pricer import MBSPricer
-from product_definitions import ProductStaticBase, EuropeanOptionStatic
-# Ensure that the custom classes are imported correctly
-from quantlib_custom_serializer import custom_json_serializer
-from datetime import date
-# Ensure that ProductStaticBase is imported if we are checking for it in to_dict
-from product_definitions import ProductStaticBase
-# Ensure that PricerBase and its derivatives are imported for pricer handling
-from base_pricer import PricerBase
-from quantlib_bond_pricer import QuantLibBondPricer
-from fast_bond_pricer import FastBondPricer
-from black_scholes_pricer import BlackScholesPricer
-from tff_approximator import TensorFunctionalForm
-
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import os
-
-
-class PortfolioBuilder:
-    """
-    A class to build portfolios from specifications, where each specification
-    defines a position in the portfolio. This class is designed to handle
-    specifications that include both TFF (Tensor Functional Form) and full
-    pricing methods for financial instruments.
-    
-    It allows for the construction of portfolios based on a list of dictionaries,
-    each specifying an instrument to include in the portfolio.
-    
-    The specifications should include the instrument ID, product static object,
-    number of holdings, and the type of pricing engine to use (either 'tff' or 'full').
-    The class also supports optional configurations for TFF and full pricers.
-    """
-    def __init__(self, model_registry: dict = None):
-        self.model_registry = model_registry if model_registry is not None else {}
-        self.uncalculated_instruments = []
-       
-    def build_portfolios_from_specs(self, portfolio_specs_list: list[dict],
-                                       global_valuation_date: date,
-                                       default_g2_params=None,
-                                       default_bs_rfr=0.025, default_bs_div=0.0
-                                       ) -> dict[str, Portfolio]:
-        print(f"Building portfolios from {len(portfolio_specs_list)} detailed specifications...")
-        portfolios = {}
-        self.uncalculated_instruments = []
-
-        for spec_idx, spec in enumerate(portfolio_specs_list):
-            client_id = spec.get('client_id')
-            instrument_id = spec.get('instrument_id')
-            num_holdings = spec.get('num_holdings')
-            product_static_dict_from_spec = spec.get('product_static_object')
-            pricing_method_from_spec = spec.get('pricing_engine_type', 'full').lower()
-            direct_tff_config_from_spec = spec.get('direct_tff_config')
-            pricer_params_from_spec = spec.get('pricer_params', {})
-
-            if not client_id or not instrument_id or num_holdings is None or product_static_dict_from_spec is None:
-                print(f"  Skipping spec at index {spec_idx}: missing essential fields.")
-                continue
-
-            try:
-                if 'valuation_date' not in product_static_dict_from_spec:
-                    product_static_dict_from_spec['valuation_date'] = global_valuation_date
-                product_static_object = reconstruct_product_static(product_static_dict_from_spec)
-            except Exception as e:
-                print(f"  ERROR reconstructing product static for '{instrument_id}' from spec: {e}. Skipping.")
-                if instrument_id not in self.uncalculated_instruments: self.uncalculated_instruments.append(instrument_id)
-                continue
-
-            if client_id not in portfolios:
-                portfolios[client_id] = Portfolio()
-            portfolio_instance = portfolios[client_id]
-
-            final_pricing_method = pricing_method_from_spec
-            final_direct_tff_config = direct_tff_config_from_spec
-            final_full_pricer_instance = None
-            final_pricer_kwargs = {}
-            if pricer_params_from_spec: final_pricer_kwargs.update(pricer_params_from_spec)
-
-            if final_pricing_method == 'tff':
-                if not final_direct_tff_config:
-                    if instrument_id in self.model_registry and self.model_registry[instrument_id].get('pricing_method', '').upper() == 'TFF':
-                        entry = self.model_registry[instrument_id]
-                        if all(k in entry for k in ['tff_model_dict', 'tff_raw_input_names', 'tff_normalization_params']):
-                            final_direct_tff_config = {
-                                'model_dict': entry['tff_model_dict'],
-                                'raw_input_names': entry['tff_raw_input_names'],
-                                'normalization_params': entry['tff_normalization_params'],
-                                'option_feature_order': entry.get('tff_option_feature_order', 0)
-                            }
-                            if 'tff_fixed_pricer_params' in entry:
-                                final_pricer_kwargs.update(entry['tff_fixed_pricer_params'])
-                        else:
-                            print(f"  WARNING: TFF data incomplete for '{instrument_id}' in registry. Fallback to FULL.")
-                            final_pricing_method = 'full'
-                    else:
-                        print(f"  WARNING: TFF spec for '{instrument_id}' missing direct_tff_config and not found as TFF in registry. Fallback to FULL.")
-                        final_pricing_method = 'full'
-                elif isinstance(product_static_object, ConvertibleBondStaticBase) and final_direct_tff_config:
-                     final_pricer_kwargs.update(pricer_params_from_spec)
-
-
-            if final_pricing_method == 'full':
-                current_pricer_params = final_pricer_kwargs
-                try:
-                    if isinstance(product_static_object, EuropeanOptionStatic):
-                        # instantiate pricer with only the static def
-                        final_full_pricer_instance = BlackScholesPricer(product_static_object)
-                        # push rates into price() kwargs
-                        rfr = current_pricer_params.get('bs_risk_free_rate', default_bs_rfr)
-                        div = current_pricer_params.get('bs_dividend_yield', default_bs_div)
-                        final_pricer_kwargs = {
-                            'risk_free_rate': rfr,
-                            'dividend_yield': div
-                        }
-                    elif isinstance(product_static_object, MBSPoolStatic):
-                        prepayment_model_type = product_static_object.prepayment_model_type
-                        prepayment_rate_param = product_static_object.prepayment_rate_param
-                        prepayment_model_instance = None
-                        if prepayment_model_type == "CPR":
-                            prepayment_model_instance = ConstantCPRModel(prepayment_rate_param)
-                        elif prepayment_model_type == "PSA":
-                            prepayment_model_instance = PSAModel(prepayment_rate_param)
-                        elif prepayment_model_type == "RefiIncentive":
-                            refi_A = current_pricer_params.get('refi_A')
-                            refi_B = current_pricer_params.get('refi_B')
-                            refi_C = current_pricer_params.get('refi_C')
-                            refi_D = current_pricer_params.get('refi_D')
-                            if all(p is not None for p in [refi_A, refi_B, refi_C, refi_D]):
-                                prepayment_model_instance = RefiIncentivePrepaymentModel(refi_A, refi_B, refi_C, refi_D)
-                            else:
-                                prepayment_model_instance = RefiIncentivePrepaymentModel()
-                        else: raise ValueError(f"Unsupported prepayment_model_type: {prepayment_model_type} for MBS.")
-                        final_full_pricer_instance = MBSPricer(product_static_object, prepayment_model=prepayment_model_instance)
-                    elif isinstance(product_static_object, CallableBondStaticBase):
-                        grid_steps = current_pricer_params.get('g2_grid_steps', 32)
-                        final_full_pricer_instance = QuantLibBondPricer(product_static_object, method='g2', grid_steps=grid_steps)
-                        if current_pricer_params.get('g2_params', default_g2_params):
-                             final_pricer_kwargs['g2_params'] = current_pricer_params.get('g2_params', default_g2_params)
-                    elif isinstance(product_static_object, ConvertibleBondStaticBase):
-                        cb_full_kwargs_needed = {
-                            's0_val': current_pricer_params.get('s0_val', current_pricer_params.get('initial_stock_price')),
-                            'dividend_yield': current_pricer_params.get('dividend_yield'),
-                            'equity_volatility': current_pricer_params.get('equity_volatility'),
-                            'credit_spread': current_pricer_params.get('credit_spread')
-                        }
-                        if any(val is None for val in cb_full_kwargs_needed.values()):
-                            raise ValueError(f"Missing required pricer_params for FULL CB pricing of {instrument_id}.")
-                        final_pricer_kwargs.update(cb_full_kwargs_needed)
-                        final_full_pricer_instance = QuantLibBondPricer(
-                            product_static_object, method='convertible_binomial',
-                            convertible_engine_steps=current_pricer_params.get('conv_engine_steps', None)
-                        )
-                    elif isinstance(product_static_object, QuantLibBondStaticBase):
-                        final_full_pricer_instance = QuantLibBondPricer(product_static_object, method='discount')
-                    else: raise ValueError("Unknown product type for full pricer reconstruction.")
-                except Exception as e_pricer:
-                    print(f"  WARNING: Cannot create full pricer for '{instrument_id}': {e_pricer}. Skipping.")
-                    if instrument_id not in self.uncalculated_instruments: self.uncalculated_instruments.append(instrument_id)
-                    continue
-
-            try:
-                portfolio_instance.add_position(
-                    instrument_id=instrument_id, product_static=product_static_object,
-                    num_holdings=num_holdings, pricing_engine_type=final_pricing_method,
-                    direct_tff_config=final_direct_tff_config if final_pricing_method == 'tff' else None,
-                    full_pricer_instance=final_full_pricer_instance if final_pricing_method == 'full' else None,
-                    full_pricer_kwargs=final_pricer_kwargs
-                )
-            except Exception as e:
-                print(f"  ERROR adding position '{instrument_id}' to portfolio for '{client_id}': {e}")
-                if instrument_id not in self.uncalculated_instruments: self.uncalculated_instruments.append(instrument_id)
-
-        if self.uncalculated_instruments:
-            print(f"  Summary: Uncalculated instruments during build_portfolios_from_specs: {self.uncalculated_instruments}")
-        print(f"Finished building {len(portfolios)} portfolios from detailed specs.")
-        return portfolios
-
-
-class PortfolioAnalytics:
-    def __init__(self,
-                 client_portfolios: dict[str, Portfolio],
-                 global_market_scenarios: np.ndarray,
-                 global_factor_names: list[str],
-                 numeric_rate_tenors: np.ndarray,
-                 scenario_generator_for_base_values: SimpleRandomScenarioGenerator
-                 ):
-        self.client_portfolios = client_portfolios
-        self.global_market_scenarios = global_market_scenarios
-        self.global_factor_names = global_factor_names
-        self.numeric_rate_tenors = numeric_rate_tenors
-        self.scenario_generator_for_base_values = scenario_generator_for_base_values
-        self.results = {}
-
-    def calculate_base_portfolio_values(self) -> dict[str, float]:
-        base_values = {}
-        base_value_scenario_list = []
-        sg_for_base = self.scenario_generator_for_base_values
-        for factor_name in self.global_factor_names:
-            val_found = False
-            for current_map_name in ['base_rates_map', 'base_s0_map', 'base_vol_map', 'base_credit_spread_points_map']:
-                current_map = getattr(sg_for_base, current_map_name, {})
-                if factor_name in current_map:
-                    base_value_scenario_list.append(current_map[factor_name])
-                    val_found = True
-                    break
-            if not val_found:
-                if hasattr(sg_for_base, 'base_s0_map') and factor_name in sg_for_base.base_s0_map:
-                     base_value_scenario_list.append(sg_for_base.base_s0_map[factor_name]); val_found = True
-                elif hasattr(sg_for_base, 'base_vol_map') and factor_name in sg_for_base.base_vol_map:
-                     base_value_scenario_list.append(sg_for_base.base_vol_map[factor_name]); val_found = True
-            if not val_found:
-                print(f"Warning: Factor '{factor_name}' for base value not found in generator base maps. Using 0.0.")
-                base_value_scenario_list.append(0.0)
-        base_value_scenario_np = np.array([base_value_scenario_list])
-
-        for client_id, portfolio_obj in self.client_portfolios.items():
-            if portfolio_obj.positions:
-                try:
-                    base_val = portfolio_obj.price_portfolio(
-                        raw_market_scenarios=base_value_scenario_np,
-                        scenario_factor_names=self.global_factor_names,
-                        portfolio_rate_pillar_times=self.numeric_rate_tenors
-                    )[0]
-                    base_values[client_id] = base_val
-                except Exception as e:
-                    print(f"  ERROR calculating base value for portfolio {client_id}: {e}")
-                    base_values[client_id] = np.nan
-            else:
-                base_values[client_id] = 0.0
-        return base_values
-
-    def run_var_analysis(self, var_percentiles: list[float] = None):
-        if var_percentiles is None:
-            var_percentiles = [1.0, 5.0]
-
-        print(f"Running VaR Analysis for percentiles: {[f'{(100-p):.0f}%' for p in var_percentiles]}")
-
-        base_portfolio_values = self.calculate_base_portfolio_values()
-        self.results = {}
-
-        for client_id, portfolio_obj in self.client_portfolios.items():
-            client_results = {'base_value': base_portfolio_values.get(client_id, np.nan)}
-            if portfolio_obj.positions and not np.isnan(client_results['base_value']):
-                print(f"  Analyzing portfolio for {client_id}...")
-                try:
-                    portfolio_values_scenarios = portfolio_obj.price_portfolio(
-                        raw_market_scenarios=self.global_market_scenarios,
-                        scenario_factor_names=self.global_factor_names,
-                        portfolio_rate_pillar_times=self.numeric_rate_tenors
-                    )
-
-                    client_results['mean_scenario_value'] = np.mean(portfolio_values_scenarios)
-                    client_results['std_dev_scenario_value'] = np.std(portfolio_values_scenarios)
-                    pnl_distribution = portfolio_values_scenarios - client_results['base_value']
-                    client_results['pnl_distribution_mean'] = np.mean(pnl_distribution)
-                    client_results['pnl_distribution_std_dev'] = np.std(pnl_distribution)
-
-                    vars_calculated = {}
-                    for p in var_percentiles:
-                        var_value = np.percentile(pnl_distribution, p)
-                        vars_calculated[f"var_{(100-p):.0f}pct"] = -var_value
-                    client_results['var_values'] = vars_calculated
-
-                    print(f"    Client {client_id}: Base Value={client_results['base_value']:.2f}, "
-                          f"Mean Scen. Value={client_results['mean_scenario_value']:.2f}, "
-                          f"VaRs: {vars_calculated}")
-
-                except Exception as e:
-                    print(f"    ERROR during VaR analysis for portfolio {client_id}: {e}")
-                    client_results['error_var_analysis'] = str(e)
-            else:
-                if not portfolio_obj.positions: print(f"  Portfolio for {client_id} is empty, skipping VaR.")
-                else: print(f"  Base value for portfolio {client_id} could not be calculated (was NaN), skipping VaR.")
-                client_results['var_values'] = {f"var_{(100-p):.0f}pct": np.nan for p in var_percentiles}
-            self.results[client_id] = client_results
-        return self.results
-
-    def calculate_base_value(self, portfolio):
-        """
-        Compute the portfolio’s base‐value by pricing it on the generator’s
-        “base” scenario (all factors = their base map values).
-        """
-        try:
-            # get a single‐row array of the base factors
-            base_scenario, _ = self.scenario_generator_for_base_values.generate_scenarios(
-                n_scenarios=1,
-                factor_names=self.global_factor_names
-            )
-            # price_portfolio expects (N, factors), names, and optionally rate pillars
-            base_price = portfolio.price_portfolio(
-                raw_market_scenarios=base_scenario,
-                scenario_factor_names=self.global_factor_names,
-                portfolio_rate_pillar_times=self.numeric_rate_tenors
-            )
-            # price_portfolio returns array with one element
-            return float(base_price[0])
-        except Exception as e:
-            print(f"ERROR calculating base value for portfolio {portfolio.client_id}: {e}")
-            return float('nan')

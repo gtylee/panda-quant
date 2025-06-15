@@ -438,3 +438,20 @@ class MBSPoolStatic(ProductStaticBase):
             'credit_spread_curve_name': self.credit_spread_curve_name
         }
 
+def reconstruct_product_static(product_dict: dict) -> ProductStaticBase:
+    product_type = product_dict.get('product_type')
+    if not product_type:
+        raise ValueError("Product dictionary must contain a 'product_type' field.")
+    if product_type == 'VanillaBond':
+        return QuantLibBondStaticBase.from_dict(product_dict)
+    elif product_type == 'CallableBond':
+        return CallableBondStaticBase.from_dict(product_dict)
+    elif product_type == 'ConvertibleBond':
+        return ConvertibleBondStaticBase.from_dict(product_dict)
+    elif product_type == 'EuropeanOption':
+        return EuropeanOptionStatic.from_dict(product_dict)
+    elif product_type == 'MBSPool':
+        return MBSPoolStatic.from_dict(product_dict)
+    else:
+        raise ValueError(f"Unknown product_type for reconstruction: {product_type}")
+

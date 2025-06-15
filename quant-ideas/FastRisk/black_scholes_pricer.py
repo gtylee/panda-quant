@@ -93,3 +93,9 @@ class BlackScholesPricer(PricerBase):
             volatility=V,
             **price_kwargs
         )
+
+    def get_required_factor_names(self, rate_pillars: np.ndarray = None) -> list:
+        prod = self.product_static
+        key_s0  = f"{prod.currency}_{prod.underlying_symbol}_S0"
+        key_vol = f"{prod.currency}_{prod.underlying_symbol}_VOL"
+        return [key_s0, key_vol]
