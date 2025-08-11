@@ -1,0 +1,138 @@
+[
+    {
+        "instrument_id": "USD_IR_VANILLA_INST_1",
+        "product_type": "VanillaBond",
+        "pricing_preference": "TFF",
+        "params": {
+            "valuation_date": "2025-05-18",
+            "maturity_date": "2033-05-18",
+            "coupon_rate": 0.043896289605806986,
+            "face_value": 100.0,
+            "currency": "USD",
+            "index_stub": "IR",
+            "freq": 2,
+            "settlement_days": 0
+        },
+        "tff_config": {
+            "n_train": 64,
+            "n_test": 4,
+            "seed": 0
+        }
+    },
+    {
+        "instrument_id": "USD_IR_CALLABLE_INST_2",
+        "product_type": "CallableBond",
+        "pricing_preference": "TFF",
+        "params": {
+            "valuation_date": "2025-05-18",
+            "maturity_date": "2034-05-18",
+            "coupon_rate": 0.0379597545259111,
+            "face_value": 100.0,
+            "currency": "USD",
+            "index_stub": "IR",
+            "freq": 2,
+            "call_dates": [
+                "2029-05-18",
+                "2030-05-18",
+                "2031-05-18",
+                "2032-05-18",
+                "2033-05-18"
+            ],
+            "call_prices": [
+                105.0,
+                104.0,
+                103.0,
+                102.0,
+                101.0
+            ]
+        },
+        "pricer_params": {
+            "g2_params": [
+                0.01,
+                0.003,
+                0.015,
+                0.006,
+                -0.75
+            ],
+            "g2_grid_steps": 16
+        },
+        "tff_config": {
+            "n_train": 128,
+            "n_test": 4,
+            "seed": 1,
+            "order": 3
+        }
+    },
+    {
+        "instrument_id": "USD_STOCK_2_EURO_CALL_1Y_K91_INST_3",
+        "product_type": "EuropeanOption",
+        "pricing_preference": "TFF",
+        "params": {
+            "valuation_date": "2025-05-18",
+            "expiry_date": "2026-05-18",
+            "strike_price": 91.99949831636006,
+            "option_type": "call",
+            "currency": "USD",
+            "underlying_symbol": "STOCK_2"
+        },
+        "pricer_params": {
+            "bs_risk_free_rate": 0.025,
+            "bs_dividend_yield": 0.01
+        },
+        "tff_config": {
+            "n_train": 128,
+            "n_test": 4,
+            "option_feature_order": 2,
+            "seed": 2
+        }
+    },
+    {
+        "instrument_id": "USD_STOCK_3_CONV_S0_DYN_INST_4",
+        "product_type": "ConvertibleBond",
+        "pricing_preference": "TFF",
+        "params": {
+            "valuation_date": "2025-05-18",
+            "issue_date": "2024-11-18",
+            "maturity_date": "2034-05-18",
+            "coupon_rate": 0.030011258334170655,
+            "conversion_ratio": 1.0,
+            "face_value": 1.0,
+            "currency": "USD",
+            "index_stub": "IR",
+            "underlying_symbol": "STOCK_3",
+            "freq": 2
+        },
+        "pricer_params": {
+            "dividend_yield": 0.01,
+            "equity_volatility": 0.25,
+            "credit_spread": 0.015,
+            "s0_val": 100.0
+        },
+        "tff_config": {
+            "n_train": 128,
+            "n_test": 8,
+            "seed": 3,
+            "convertible_tff_market_inputs_as_factors": true
+        }
+    },
+    {
+        "instrument_id": "USD_IR_VANILLA_INST_5",
+        "product_type": "VanillaBond",
+        "pricing_preference": "TFF",
+        "params": {
+            "valuation_date": "2025-05-18",
+            "maturity_date": "2034-05-18",
+            "coupon_rate": 0.041242177333881365,
+            "face_value": 100.0,
+            "currency": "USD",
+            "index_stub": "IR",
+            "freq": 2,
+            "settlement_days": 0
+        },
+        "tff_config": {
+            "n_train": 64,
+            "n_test": 4,
+            "seed": 4
+        }
+    }
+]

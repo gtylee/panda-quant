@@ -1,0 +1,56 @@
+[
+  {
+    "product_type": "VanillaBond",
+    "valuation_date": "2025-06-15",
+    "maturity_date": "2029-06-15",
+    "coupon_rate": 0.025,
+    "face_value": 100.0,
+    "freq": 2,
+    "currency": "USD",
+    "index_stub": "GENERIC_IR",
+    "calendar": "target",
+    "day_count": "Actual/Actual (ISDA)"
+  },
+  {
+    "product_type": "VanillaBond",
+    "valuation_date": "2025-06-15",
+    "maturity_date": "2032-06-15",
+    "coupon_rate": 0.03,
+    "face_value": 100.0,
+    "freq": 2,
+    "currency": "USD",
+    "index_stub": "GENERIC_IR",
+    "calendar": "target",
+    "day_count": "Actual/Actual (ISDA)"
+  },
+  {
+    "product_type": "CallableBond",
+    "valuation_date": "2025-06-15",
+    "maturity_date": "2031-06-15",
+    "coupon_rate": 0.035,
+    "face_value": 100.0,
+    "freq": 2,
+    "currency": "USD",
+    "index_stub": "GENERIC_IR",
+    "calendar": "target",
+    "day_count": "Actual/Actual (ISDA)",
+    "call_dates": ["2028-06-15", "2029-06-15", "2030-06-15"],
+    "call_prices": [102.0, 101.0, 100.5]
+  },
+  {
+    "product_type": "ConvertibleBond",
+    "valuation_date": "2025-06-15",
+    "issue_date": "2024-06-15",
+    "maturity_date": "2031-06-15",
+    "coupon_rate": 0.02,
+    "conversion_ratio": 1.0,
+    "face_value": 100.0,
+    "freq": 2,
+    "currency": "USD",
+    "index_stub": "GENERIC_IR",
+    "calendar": "target",
+    "day_count": "Actual/Actual (ISDA)",
+    "underlying_symbol": "AAPL"
+  }
+]
+
