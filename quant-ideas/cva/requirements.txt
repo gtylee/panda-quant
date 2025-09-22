@@ -1,0 +1,4 @@
+QuantLib==1.39
+numpy>=1.23,<3
+pandas>=2.0,<3
+scipy>=1.10,<2
